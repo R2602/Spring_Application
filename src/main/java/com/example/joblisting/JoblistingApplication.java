@@ -18,14 +18,22 @@ import springfox.documentation.spi.DocumentationType;
 import springfox.documentation.spring.web.plugins.Docket;
 import springfox.documentation.swagger2.annotations.EnableSwagger2;
 
+import javax.servlet.http.HttpServletRequest;
+import java.net.InetAddress;
+import java.net.UnknownHostException;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+
 @SpringBootApplication
 @EnableSwagger2
 public class JoblistingApplication {
 
-    // Rate limiting setup
-    private static final RateLimiter rateLimiter = RateLimiter.create(10.0); // Adjust the rate limit as needed
-    private static final int REQUEST_THRESHOLD = 50; // Adjust the threshold as needed
-    private static int requestCount = 0;
+    private static final RateLimiter rateLimiter = RateLimiter.create(10.0);
+    private static final int REQUEST_THRESHOLD = 50;
+    private static final int IP_TRACKING_THRESHOLD = 10;
+    private static final long IP_TRACKING_WINDOW_MILLIS = 60000;
+    private static final Map<String, Integer> ipRequestCountMap = new ConcurrentHashMap<>();
+    private static int totalRequestCount = 0;
 
     @Bean
     public Docket api() {
@@ -42,27 +50,57 @@ public class JoblistingApplication {
 
     public static void main(String[] args) {
         SpringApplication.run(JoblistingApplication.class, args);
+        try {
+            System.out.println("Server IP address: " + InetAddress.getLocalHost().getHostAddress());
+        } catch (UnknownHostException e) {
+            e.printStackTrace();
+        }
     }
 
-    // Rate limiting check before processing each request
     @RestController
     @RequestMapping("/api")
     public static class RateLimitController {
 
         @GetMapping("/your-endpoint")
-        public ResponseEntity<String> yourEndpoint() {
+        public ResponseEntity<String> yourEndpoint(HttpServletRequest request) {
+            String clientIP = getClientIP(request);
+
+            if (ipRateLimitExceeded(clientIP)) {
+                return ResponseEntity.status(HttpStatus.TOO_MANY_REQUESTS).body("IP rate limit exceeded");
+            }
+
             if (rateLimiter.tryAcquire()) {
-                // Process the request
-                requestCount++;
-                if (requestCount > REQUEST_THRESHOLD) {
-                    // DDoS detection: Block requests exceeding the threshold
+                incrementIPRequestCount(clientIP);
+                totalRequestCount++;
+
+                if (totalRequestCount > REQUEST_THRESHOLD) {
+                    System.out.println("Potential DDoS attack detected!");
+                    // Additional actions to handle the suspected DDoS attack can be added here
                     return ResponseEntity.status(HttpStatus.TOO_MANY_REQUESTS).body("Potential DDoS detected");
                 }
                 return ResponseEntity.ok("Request processed successfully");
             } else {
-                // Request exceeded rate limit
-                return ResponseEntity.status(HttpStatus.TOO_MANY_REQUESTS).body("Rate limit exceeded");
+                return ResponseEntity.status(HttpStatus.TOO_MANY_REQUESTS).body("Global rate limit exceeded");
             }
+        }
+
+        private boolean ipRateLimitExceeded(String clientIP) {
+            int ipRequestCount = ipRequestCountMap.getOrDefault(clientIP, 0);
+            return ipRequestCount > IP_TRACKING_THRESHOLD;
+        }
+
+        private void incrementIPRequestCount(String clientIP) {
+            ipRequestCountMap.merge(clientIP, 1, Integer::sum);
+            ipRequestCountMap.entrySet().removeIf(entry ->
+                    System.currentTimeMillis() - entry.getValue() > IP_TRACKING_WINDOW_MILLIS);
+        }
+
+        private String getClientIP(HttpServletRequest request) {
+            String xForwardedFor = request.getHeader("X-Forwarded-For");
+            if (xForwardedFor != null && !xForwardedFor.isEmpty()) {
+                return xForwardedFor.split(",")[0].trim();
+            }
+            return request.getRemoteAddr();
         }
     }
 }
