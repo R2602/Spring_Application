@@ -21,7 +21,7 @@ import com.example.joblisting.postRepository.SearchRepository;
 import springfox.documentation.annotations.ApiIgnore;
 
 @RestController
-@CrossOrigin(origins = "http://localhost:3000")
+@CrossOrigin(origins = "https://65e60e45a7d57300087f04fc--springupjobsearch.netlify.app/")
 public class PostController {
 	
 	@Autowired
